@@ -13,6 +13,36 @@
 #include <zephyr/rtio/rtio.h>
 #include <zephyr/dsp/print_format.h>
 
+
+#include <zephyr/logging/log.h>
+
+
+
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/gap.h>
+
+LOG_MODULE_REGISTER(tempsound_logger, LOG_LEVEL_INF);
+
+#define DEVICE_NAME CONFIG_BT_DEVICE_NAME
+#define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) -1 )
+
+static const struct bt_data ad[] = {
+	//advertising flags
+	BT_DATA_BYTES(BT_DATA_FLAGS, BT_LE_AD_NO_BREDR),
+	//advertising packet data
+	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+};
+
+
+// dummy url data
+static unsigned char url_data[] = { 0x17, '/', '/', 'x', 'k', 'c', 'd', '.', 'c',
+				    'o',  'm' };
+
+static const struct bt_data sd[] ={
+	//scan response packet - dummy url
+	BT_DATA(BT_DATA_URI, url_data,sizeof(url_data)),
+};				
+
 /*
  * Get a device structure from a devicetree node with compatible
  * "bosch,bme280". (If there are multiple, just pick one.)
@@ -47,11 +77,30 @@ static const struct device *check_bme280_device(void)
 
 int main(void)
 {
-	const struct device *dev = check_bme280_device();
+	int err;
 
+	// cheking bme device is all the things
+	const struct device *dev = check_bme280_device();
 	if (dev == NULL) {
 		return 0;
 	}
+
+	//enable bluetooth
+	err = bt_enable(NULL);
+	if(err){
+		LOG_ERR("Couldnt start bluetooth error: %d", err);
+		return -1;
+	}
+	LOG_INF("Bluetooth Started");
+
+	err = bt_le_adv_start(BT_LE_ADV_NCONN, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+	if(err){
+		LOG_ERR("advertising did not start- error: %d", err);
+		return -1;
+	}
+
+	LOG_INF("Advertising Started");
+
 
 	while (1) {
 		uint8_t buf[128];
