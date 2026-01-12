@@ -23,7 +23,9 @@
 
 //nordic buttons and leds for testing 
 #include <dk_buttons_and_leds.h>
-#define USER_BUTTON DK_BTN1_MASK
+#define USER_BUTTON DK_BTN1_MSK
+#define RUN_STATUS_LED DK_LED1
+#define RUN_LED_BLINK_INTERVAL 1000
 
 //company code is Nordic for now
 #define COMPANY_CODE 0x0059
@@ -53,6 +55,8 @@ static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, BT_LE_AD_NO_BREDR),
 	//advertising packet data
 	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+	//manufacturer data 
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, (unsigned char*) &adv_mfg_data, sizeof(adv_mfg_data)),
 };
 
 
@@ -63,7 +67,26 @@ static unsigned char url_data[] = { 0x17, '/', '/', 'x', 'k', 'c', 'd', '.', 'c'
 static const struct bt_data sd[] ={
 	//scan response packet - dummy url
 	BT_DATA(BT_DATA_URI, url_data,sizeof(url_data)),
-};				
+};			
+
+static void button_changed(uint32_t button_state, uint32_t has_changed){
+	if (has_changed & button_state & USER_BUTTON){
+		adv_mfg_data.number_press += 1;
+		bt_le_adv_update_data(ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+	}
+}
+
+static int init_button(void)
+{
+	int err;
+
+	err = dk_buttons_init(button_changed);
+	if (err) {
+		printk("Cannot init buttons (err: %d)\n", err);
+	}
+
+	return err;
+}
 
 /*
  * Get a device structure from a devicetree node with compatible
@@ -100,6 +123,19 @@ static const struct device *check_bme280_device(void)
 int main(void)
 {
 	int err;
+
+
+	//nordic button and led setup tings
+	err = dk_leds_init();
+	if (err) {
+		LOG_ERR("LEDs init failed (err %d)\n", err);
+		return -1;
+	}
+	err = init_button();
+	if (err) {
+		printk("Button init failed (err %d)\n", err);
+		return -1;
+	}
 
 	// cheking bme device is all the things
 	const struct device *dev = check_bme280_device();
