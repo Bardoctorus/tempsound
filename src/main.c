@@ -21,6 +21,28 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/gap.h>
 
+//nordic buttons and leds for testing 
+#include <dk_buttons_and_leds.h>
+#define USER_BUTTON DK_BTN1_MASK
+
+//company code is Nordic for now
+#define COMPANY_CODE 0x0059
+
+typedef struct adv_mfg_data {
+	uint16_t company_code;
+	uint16_t number_press;
+} adv_mfg_data_type;
+
+static const struct bt_le_adv_param *adv_param = 
+	BT_LE_ADV_PARAM(BT_LE_ADV_OPT_NONE, // no avertising options selected
+		800, //min advertisins interval 500ms (800 *0.625)
+		801, //max adv time 500.625ms (801 *0.625)
+		NULL // undirected advertising
+	);
+
+static adv_mfg_data_type adv_mfg_data = { COMPANY_CODE, 0x00 };
+
+
 LOG_MODULE_REGISTER(tempsound_logger, LOG_LEVEL_INF);
 
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
