@@ -28,8 +28,10 @@
 
 //nordic buttons and leds for testing 
 #include <dk_buttons_and_leds.h>
+#include <bluetooth/services/lbs.h>
 #define USER_BUTTON DK_BTN1_MSK
 #define RUN_STATUS_LED DK_LED1
+#define CONNECTION_STATUS_LED DK_LED2
 #define RUN_LED_BLINK_INTERVAL 1000
 
 //company code is Nordic for now
@@ -45,6 +47,7 @@ static unsigned char url_data[] = { 0x17, '/', '/', 'x', 'k', 'c', 'd', '.', 'c'
 				    'o',  'm' };
 
 static struct k_work adv_work;
+struct bt_conn *my_conn = NULL;
 
 static const struct bt_le_adv_param *adv_param = 
 	BT_LE_ADV_PARAM((BT_LE_ADV_OPT_CONN | BT_LE_ADV_OPT_USE_IDENTITY), // advertisin options
@@ -96,13 +99,47 @@ static void advertising_start(void)
 {
 	k_work_submit(&adv_work);
 }
+
+void on_connected(struct bt_conn *conn, uint8_t err){
+	if(err){
+		LOG_ERR("connection error, on_connected, err: %d", err);
+		return;
+	}
+	LOG_INF("Connected");
+	my_conn = bt_conn_ref(conn);
+
+	dk_set_led(CONNECTION_STATUS_LED, 1);
+}
+
+void on_disconnected(struct bt_conn *conn, uint8_t reason){
+	
+	LOG_INF("Disconnected because %d", reason);
+	bt_conn_unref(my_conn);
+	dk_set_led(CONNECTION_STATUS_LED, 0);
+
+}
+
+
 static void recycled_cb(void)
 {
 	printk("Connection object available from previous conn. Disconnect is complete!\n");
 	advertising_start();
 }
 
-BT_CONN_CB_DEFINE(conn_callbacks) = {
+
+// These two things are the same. The difference is
+// that here we are manually making the bt_conn_cb struct
+// then registering them in main. The BT_CONN_CB_DEFINE macro
+// will do both in one swipe. TODO: this.
+
+
+// BT_CONN_CB_DEFINE(conn_callbacks) = {
+// 	.recycled = recycled_cb,
+// };
+
+struct bt_conn_cb connection_callbacks = {
+	.connected = on_connected,
+	.disconnected = on_disconnected,
 	.recycled = recycled_cb,
 };
 
@@ -112,9 +149,26 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 		
 
 static void button_changed(uint32_t button_state, uint32_t has_changed){
+
+	// check for presses
 	if (has_changed & button_state & USER_BUTTON){
 		adv_mfg_data.number_press += 1;
 		bt_le_adv_update_data(ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+	}
+
+	// check if pressed or released
+	// this is the bare bones code from the nordic tutorial, no checking if notifications have been
+	//selected or anything like that.
+	int err;
+	bool user_button_changed = (has_changed & USER_BUTTON) ? true : false;
+	bool user_button_pressed = (button_state & USER_BUTTON) ? true : false;
+	if (user_button_changed) {
+		LOG_INF("Button %s", (user_button_pressed ? "pressed" : "released"));
+
+		err = bt_lbs_send_button_state(user_button_pressed);
+		if (err) {
+			LOG_ERR("Couldn't send notification. (err: %d)", err);
+		}
 	}
 }
 
@@ -191,11 +245,12 @@ int main(void)
     if (err < 0) {
         printk("Creating new ID failed (err %d)\n", err);
     }
-	// cheking bme device is all the things
-	const struct device *dev = check_bme280_device();
-	if (dev == NULL) {
-		return 0;
+
+	err = bt_conn_cb_register(&connection_callbacks);
+	if(err){
+		LOG_ERR("connection callback registration failed: %d", err);
 	}
+
 
 	//enable bluetooth
 	err = bt_enable(NULL);
@@ -216,6 +271,12 @@ int main(void)
 
 	LOG_INF("Advertising Started");
 
+
+		// cheking bme device is all the things
+	const struct device *dev = check_bme280_device();
+	if (dev == NULL) {
+		return 0;
+	}
 
 	while (1) {
 		uint8_t buf[128];
