@@ -23,6 +23,7 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gap.h>
+#include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/addr.h>
 
@@ -48,6 +49,9 @@ static unsigned char url_data[] = { 0x17, '/', '/', 'x', 'k', 'c', 'd', '.', 'c'
 
 static struct k_work adv_work;
 struct bt_conn *my_conn = NULL;
+
+static struct bt_gatt_exchange_params exchange_params;
+static void exchange_func(struct bt_conn *conn, uint8_t att_err, struct bt_gatt_exchange_params *params);
 
 static const struct bt_le_adv_param *adv_param = 
 	BT_LE_ADV_PARAM((BT_LE_ADV_OPT_CONN | BT_LE_ADV_OPT_USE_IDENTITY), // advertisin options
@@ -100,6 +104,44 @@ static void advertising_start(void)
 	k_work_submit(&adv_work);
 }
 
+static void update_phy(struct bt_conn *conn){
+	int err;
+	const struct bt_conn_le_phy_param preferred_phy = {
+		.options = BT_CONN_LE_PHY_OPT_NONE,
+		.pref_rx_phy = BT_GAP_LE_PHY_2M,
+		.pref_tx_phy = BT_GAP_LE_PHY_2M,
+	};
+
+	err = bt_conn_le_phy_update(conn, &preferred_phy);
+	if(err){
+		LOG_ERR("could not update phy err: %d", err);
+		//return; why do none of these have returns?
+	}
+}
+
+static void update_data_length(struct bt_conn *conn){
+	int err;
+	struct bt_conn_le_data_len_param my_data_len = {
+		.tx_max_len = BT_GAP_DATA_LEN_MAX,
+		.tx_max_time = BT_GAP_DATA_TIME_MAX,
+	};
+
+	err = bt_conn_le_data_len_update(conn, &my_data_len); //  tut put my_conn here but that makes no sense?
+	if (err) {
+        LOG_ERR("data_len_update failed (err %d)", err);
+    }
+}
+
+static void update_mtu(struct bt_conn *conn){
+	int err;
+	exchange_params.func = exchange_func;
+
+	err = bt_gatt_exchange_mtu(conn, &exchange_params);
+	if(err){
+		LOG_ERR("bt_gat_exchange_mtu failed because: %d", err);
+	}
+}
+
 void on_connected(struct bt_conn *conn, uint8_t err){
 	if(err){
 		LOG_ERR("connection error, on_connected, err: %d", err);
@@ -109,6 +151,27 @@ void on_connected(struct bt_conn *conn, uint8_t err){
 	my_conn = bt_conn_ref(conn);
 
 	dk_set_led(CONNECTION_STATUS_LED, 1);
+
+
+	// this delay was in the sample code without explanation.
+	//presumably it's just one of those machine need a sec things
+	k_sleep(K_MSEC(100)); 
+
+	//getting the connection info:
+	struct bt_conn_info info;
+	err = bt_conn_get_info(conn, &info);
+	if(err){
+		LOG_ERR("Cannot get connection info err: %d", err);
+		return;
+	}
+	double conn_interval = info.le.interval *1.25; //in ms - note in 3.2.x this is depreciated and BT_GAP_US_TO_CONN_INTERVAL(info.le.interval_us) * 1.25; this replaces it
+	uint16_t supervision_timeout = info.le.timeout*10;
+	LOG_INF("connection params: interval %.2f ms, latenct %d intervals, timeout %d ms", conn_interval, info.le.latency, supervision_timeout);
+	update_phy(my_conn);
+	k_sleep(K_MSEC(1000));  // Delay added to avoid link layer collisions.
+	update_data_length(my_conn);
+	update_mtu(my_conn);
+
 }
 
 void on_disconnected(struct bt_conn *conn, uint8_t reason){
@@ -126,6 +189,35 @@ static void recycled_cb(void)
 	advertising_start();
 }
 
+void on_le_param_updated(struct bt_conn *conn, uint16_t interval, uint16_t latency, uint16_t timeout){
+	double connection_interval = interval*1.25;         // in ms
+    uint16_t supervision_timeout = timeout*10;          // in ms
+    LOG_INF("Connection parameters updated: interval %.2f ms, latency %d intervals, timeout %d ms", connection_interval, latency, supervision_timeout);
+}
+
+void on_le_phy_updated(struct bt_conn *conn, struct bt_conn_le_phy_info *param){
+	//literally copied from tutorial code as my hands are frozen
+	// PHY Updated
+    if (param->tx_phy == BT_CONN_LE_TX_POWER_PHY_1M) {
+        LOG_INF("PHY updated. New PHY: 1M");
+    }
+    else if (param->tx_phy == BT_CONN_LE_TX_POWER_PHY_2M) {
+        LOG_INF("PHY updated. New PHY: 2M");
+    }
+    else if (param->tx_phy == BT_CONN_LE_TX_POWER_PHY_CODED_S8) {
+        LOG_INF("PHY updated. New PHY: Long Range");
+    }
+
+}
+
+void on_le_data_len_updated(struct bt_conn *conn, struct bt_conn_le_data_len_info *info){
+	uint16_t tx_len     = info->tx_max_len; 
+    uint16_t tx_time    = info->tx_max_time;
+    uint16_t rx_len     = info->rx_max_len;
+    uint16_t rx_time    = info->rx_max_time;
+    LOG_INF("Data length updated. Length %d/%d bytes, time %d/%d us", tx_len, rx_len, tx_time, rx_time);
+}
+
 
 // These two things are the same. The difference is
 // that here we are manually making the bt_conn_cb struct
@@ -141,9 +233,20 @@ struct bt_conn_cb connection_callbacks = {
 	.connected = on_connected,
 	.disconnected = on_disconnected,
 	.recycled = recycled_cb,
+	.le_param_updated = on_le_param_updated,
+	.le_phy_updated = on_le_phy_updated,
+	.le_data_len_updated = on_le_data_len_updated,
 };
 
-
+static void exchange_func(struct bt_conn *conn, uint8_t att_err,
+			  struct bt_gatt_exchange_params *params)
+{
+	LOG_INF("MTU exchange %s", att_err == 0 ? "successful" : "failed");
+    if (!att_err) {
+        uint16_t payload_mtu = bt_gatt_get_mtu(conn) - 3;   // 3 bytes used for Attribute headers.
+        LOG_INF("New MTU: %d bytes", payload_mtu);
+    }
+}
 
 
 		
